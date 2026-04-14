@@ -14,11 +14,34 @@ sleap-io provides a unified interface for reading and writing pose tracking data
 
 ::: sleap_io.io.main.save_video
 
+### Norpix .seq Format
+
+The `.seq` format is used by StreamPix / Norpix for high-speed video recording, commonly used in behavioral neuroscience. sleap-io provides native read support for `.seq` files via the [`SeqVideo`][sleap_io.SeqVideo] backend.
+
+```python
+video = sio.load_video("recording.seq")
+frame = video[0]  # Read first frame
+```
+
+Supported codecs: uncompressed grayscale (`monoraw`), uncompressed BGR (`raw`), JPEG compressed (`monojpg`, `jpg`), and PNG compressed (`monopng`, `png`). Per-frame timestamps are accessible via the backend:
+
+```python
+backend = video.backend  # SeqVideo instance
+ts = backend.get_timestamp(0)    # Timestamp of first frame (seconds since epoch)
+ts_all = backend.get_timestamps()  # All timestamps as numpy array
+```
+
+To convert `.seq` to MP4:
+
+```bash
+sio reencode recording.seq -o recording.mp4
+```
+
 ## Format-Specific Functions
 
 ### SLEAP Native Format (.slp)
 
-The native SLEAP format stores complete pose tracking projects including videos, skeletons, and annotations.
+The native SLEAP format stores complete pose tracking projects including videos, skeletons, and annotations. SLP is the primary format with full round-trip support for bounding boxes (format 1.7+), regions of interest (ROIs), and segmentation masks (format 1.5+).
 
 !!! tip "Detailed Format Specification"
     For comprehensive documentation of the SLP file format including HDF5 layout, data structures, and version history, see the **[SLP File Format Reference](slp.md)**.
@@ -272,7 +295,7 @@ The NWB format requires certain metadata fields. sleap-io provides sensible defa
 
 ### JABS Format (.h5)
 
-[JABS](https://github.com/KumarLabJax/JABS-behavior-classifier) (Janelia Automatic Behavior System) format for behavior classification.
+[JABS](https://github.com/KumarLabJax/JABS-behavior-classifier) (JAX Animal Behavior System) format for behavior classification.
 
 ::: sleap_io.io.main.load_jabs
 
@@ -460,6 +483,37 @@ Load predictions from [LEAP](https://github.com/talmo/leap), a SLEAP predecessor
 
 ::: sleap_io.io.main.save_coco
 
+### TIFF Label Images (.tif, .tiff)
+
+TIFF files store dense integer label images for instance segmentation, where each pixel value encodes which object occupies that location. This is the standard output of tools like [Cellpose](https://www.cellpose.org/) and [StarDist](https://github.com/stardist/stardist).
+
+sleap-io supports three TIFF layouts: single files, multi-page stacks, and directories of per-frame TIFFs. A JSON sidecar (`.meta.json`) is written alongside the TIFF to preserve track names and categories.
+
+!!! tip "Detailed Format Documentation"
+    For comprehensive documentation of TIFF label image I/O including file structures and sidecar metadata, see the **[TIFF Format Reference](tiff.md)**.
+
+::: sleap_io.io.main.load_label_images
+
+::: sleap_io.io.main.save_label_images
+
+### COCO Panoptic Segmentation
+
+[COCO panoptic](https://cocodataset.org/#panoptic-2018) format represents per-pixel segmentation using a JSON annotation file and per-frame PNG label images. Each pixel is encoded as `R + G * 256 + B * 256^2`. "Thing" segments (countable objects) get track identities; "stuff" segments (uncountable regions) do not.
+
+```python
+from sleap_io.io.coco import read_coco_panoptic, write_coco_panoptic
+
+# Read panoptic annotations
+labels = read_coco_panoptic("panoptic.json", images_dir="panoptic_pngs/")
+
+# Write panoptic annotations
+write_coco_panoptic("output.json", labels, images_dir="output_pngs/")
+```
+
+::: sleap_io.io.coco.read_coco_panoptic
+
+::: sleap_io.io.coco.write_coco_panoptic
+
 ### Ultralytics YOLO Format
 
 Support for [Ultralytics YOLO](https://docs.ultralytics.com/) pose format.
@@ -467,6 +521,40 @@ Support for [Ultralytics YOLO](https://docs.ultralytics.com/) pose format.
 ::: sleap_io.io.main.load_ultralytics
 
 ::: sleap_io.io.main.save_ultralytics
+
+### GeoJSON Format (.geojson)
+
+[GeoJSON](https://geojson.org/) (RFC 7946) is a JSON-based format for encoding geographic data structures. sleap-io uses it to store ROIs (regions of interest) as a human-readable, standalone format. The output is compatible with the [movement](https://github.com/neuroinformatics-unit/movement) library (v0.15.0+) and the broader geospatial Python ecosystem (Shapely, GeoPandas, QGIS, QuPath).
+
+Each ROI is serialized as a GeoJSON Feature with geometry and metadata properties. The `ROI` class also implements the Python `__geo_interface__` protocol for direct interoperability with Shapely and other geo-aware libraries.
+
+#### Examples
+
+```python
+import sleap_io as sio
+from sleap_io.model.roi import UserROI
+from shapely.geometry import box
+
+# Create some ROIs
+rois = [
+    UserROI(geometry=box(100, 200, 150, 280), name="box1", category="animal"),
+    UserROI.from_polygon([(0, 0), (50, 0), (50, 50)], name="region"),
+]
+
+# Save to GeoJSON
+sio.save_geojson(rois, "rois.geojson")
+
+# Load back
+loaded_rois = sio.load_geojson("rois.geojson")
+
+# Also works with load_file/save_file (wraps in Labels)
+labels = sio.load_file("rois.geojson")  # Returns Labels(rois=...)
+sio.save_file(labels, "rois.geojson")
+```
+
+::: sleap_io.io.main.load_geojson
+
+::: sleap_io.io.main.save_geojson
 
 ## Working with Multiple Datasets
 
@@ -488,7 +576,7 @@ Load and save skeleton definitions separately:
 
 sleap-io automatically detects file formats based on:
 
-1. **File extension**: `.slp`, `.nwb`, `.h5`, `.json`, `.mat`, `.csv`
+1. **File extension**: `.slp`, `.nwb`, `.h5`, `.json`, `.geojson`, `.mat`, `.csv`, `.tif`, `.tiff`
 2. **File content**: For ambiguous extensions like `.h5` (JABS vs DLC) or `.json` (Label Studio vs COCO)
 3. **Explicit format**: Pass `format` parameter to override auto-detection
 
@@ -544,26 +632,34 @@ assert labels_original.skeleton == labels_reloaded.skeleton
 
 Different formats have varying capabilities:
 
-| Format | Read | Write | Videos | Skeletons | Tracks | Confidence | User/Predicted |
-|--------|------|-------|--------|-----------|--------|------------|----------------|
-| SLEAP (.slp) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| NWB (.nwb) | ✅ | ✅ | ✅* | ✅ | ✅ | ✅ | ✅ |
-| JABS (.h5) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Analysis HDF5 | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ |
-| Label Studio | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| CSV (.csv) | ✅ | ✅ | ❌ | ✅** | ✅ | ✅ | ❌ |
-| DeepLabCut | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ |
-| AlphaTracker | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ |
-| LEAP (.mat) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| COCO (.json) | ✅ | ✅ | ❌ | ✅ | ✅*** | ❌ | ✅ |
-| Ultralytics | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
+| Format | Read | Write | Videos | Skeletons | Tracks | Confidence | User/Predicted | BBoxes | ROIs/Masks | Label Images |
+|--------|------|-------|--------|-----------|--------|------------|----------------|--------|------------|--------------|
+| SLEAP (.slp) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| NWB (.nwb) | ✅ | ✅ | ✅* | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| JABS (.h5) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Analysis HDF5 | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Label Studio | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| CSV (.csv) | ✅ | ✅ | ❌ | ✅** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| DeepLabCut | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| [TrackMate](trackmate.md) (.csv) | ✅ | ❌ | ✅******* | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| AlphaTracker | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| LEAP (.mat) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| COCO (.json) | ✅ | ✅ | ❌ | ✅ | ✅*** | ❌ | ✅ | ✅ | ✅ | ❌ |
+| COCO Panoptic | ✅ | ✅ | ❌ | ❌ | ✅**** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| TIFF (.tif) | ✅ | ✅ | ❌ | ❌ | ✅***** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Ultralytics | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅****** | ❌ |
+| GeoJSON (.geojson) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 
 *NWB can embed videos with `annotations_export` format
 **CSV skeleton edges/symmetries preserved via optional metadata JSON sidecar
 ***COCO tracks are stored via `attributes.object_id` (CVAT-compatible)
+****COCO panoptic tracks for "thing" segments only
+*****TIFF tracks via `.meta.json` sidecar
+******Ultralytics segmentation polygons stored as ROIs
+*******TrackMate auto-detects sibling `.tif`/`.tiff` video files
 
 ## See Also
 
-- [Data Model](../model.md): Understanding the core data structures
+- [Data Model](../model/index.md): Understanding the core data structures
 - [Examples](../examples.md): More usage examples and recipes
 - [Merging](../merging.md): Combining data from multiple sources

@@ -539,6 +539,131 @@ base.merge(other, instance=InstanceMatcher(method="spatial", threshold=2.0))
 
 ---
 
+## Spatial annotation handling {#spatial-annotations}
+
+In addition to instances, `merge()` handles spatial annotations nested in frames:
+centroids, bounding boxes, segmentation masks, ROIs, and label images.
+
+When frames are merged (whether creating new frames or merging into existing ones),
+annotations are copied along with the frame. Their **track** and **video** references
+are remapped using the same mappings built during skeleton, video, and track matching.
+This ensures annotations reference the correct objects in the merged dataset.
+
+Annotation handling follows the same frame merge strategy used for instances:
+
+| Strategy | Annotation behavior |
+|----------|---------------------|
+| `keep_original` | Keep self's annotations only |
+| `keep_new` | Replace with other's annotations |
+| `keep_both` | Keep all (deduplicated by identity) |
+| `update_tracks` | Spatial matching, then update track assignments on matched annotations |
+| `replace_predictions` | Keep user annotations from self, add predicted from other |
+| `auto` | Spatial matching + full user-vs-predicted resolution cascade |
+
+For `auto` and `update_tracks`, annotations are matched by centroid distance using the
+same threshold as instance matching (default 5 pixels). Each modality is resolved
+independently — centroids by `(x, y)`, bounding boxes and ROIs by their centroid, and
+masks by the centroid of their bounding box.
+
+New frames (no matching frame in the target) always copy all annotations from the
+source, regardless of strategy.
+
+### Example: merging with annotations
+
+```pycon
+>>> import sleap_io as sio
+>>> import numpy as np
+>>> skeleton = sio.Skeleton(["head", "thorax", "abdomen"])
+>>> video = sio.Video("test.mp4", open_backend=False)
+>>> inst1 = sio.Instance.from_numpy(
+...     np.array([[10, 20], [30, 40], [50, 60]]),
+...     skeleton=skeleton,
+... )
+>>> lf1 = sio.LabeledFrame(video=video, frame_idx=0, instances=[inst1])
+>>> lf1.append(sio.UserBoundingBox(
+...     x1=5, y1=15, x2=55, y2=65,
+... ))
+>>> base = sio.Labels(labeled_frames=[lf1])
+>>> inst2 = sio.PredictedInstance.from_numpy(
+...     np.array([[10, 20, 0.9], [30, 40, 0.8], [50, 60, 0.7]]),
+...     skeleton=skeleton,
+...     score=0.9,
+... )
+>>> lf2 = sio.LabeledFrame(video=video, frame_idx=0, instances=[inst2])
+>>> lf2.append(sio.PredictedBoundingBox(
+...     x1=6, y1=16, x2=56, y2=66, score=0.9,
+... ))
+>>> base.merge(sio.Labels(labeled_frames=[lf2]))
+>>> print(len(base[0].bboxes))
+
+```
+
+### Per-modality spatial matching
+
+For `auto` and `update_tracks` strategies, annotations are paired by centroid
+distance. Each annotation type extracts its centroid differently:
+
+| Modality | Centroid source |
+|----------|----------------|
+| Centroids | `(x, y)` coordinates directly |
+| Bounding boxes | `centroid_xy` property (box center) |
+| ROIs | `centroid_xy` property (geometry centroid) |
+| Segmentation masks | Centroid of `bbox` (bounding box center) |
+
+The matching threshold is controlled by the `instance` parameter — the same
+threshold applies to both instance matching and annotation matching:
+
+```python
+from sleap_io.model.matching import InstanceMatcher
+
+# Use a wider threshold (10px) for annotation matching
+base.merge(other, instance=InstanceMatcher(method="spatial", threshold=10.0))
+```
+
+---
+
+## Merging label images
+
+For segmentation workflows, [`merge_label_images()`][sleap_io.merge_label_images]
+merges label images from multiple SLP files into a single file. This is separate
+from [`Labels.merge()`](#sleap_io.model.labels.Labels.merge), which merges
+keypoint annotations.
+
+```python
+import sleap_io as sio
+
+merged = sio.merge_label_images(
+    ["batch_0.slp", "batch_1.slp", "batch_2.slp"],
+    "all_frames.slp",
+)
+```
+
+This is designed for parallelized segmentation pipelines where each batch of
+frames is processed independently (e.g., with Cellpose or StarDist) and the
+results need to be combined.
+
+Key behavior:
+
+- **Zero-decompression copy**: For chunked-format (v2.2) sources, compressed
+  chunks are copied directly via `read_direct_chunk` / `write_direct_chunk`
+  with no decompression/recompression overhead.
+- **Legacy format support**: Blob-format sources (v1.8-v2.1) are transparently
+  converted to chunked format during the merge.
+- **Video deduplication**: Videos are deduplicated by filename across sources.
+  Pass an explicit `video=` argument to override and assign all frames to a
+  single video.
+- **Track deduplication**: Tracks with the same name across sources are merged
+  into a single track.
+- **Dimension validation**: All source files must have the same frame dimensions
+  `(H, W)`. A `ValueError` is raised if dimensions differ.
+
+!!! tip "See also"
+    [`LabelImageWriter`][sleap_io.LabelImageWriter] for streaming writes of
+    individual frames — useful for producing the per-batch SLP files that
+    `merge_label_images()` can then combine.
+
+---
+
 ## Reference
 
 ### Labels.merge

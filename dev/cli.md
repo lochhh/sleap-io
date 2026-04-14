@@ -60,6 +60,7 @@ sio convert labels.slp -o labels.nwb
 sio --help
 sio show --help
 sio convert --help
+sio export --help
 sio split --help
 sio unsplit --help
 sio merge --help
@@ -87,6 +88,7 @@ sio show labels.slp --lf 0             # Labeled frame details
 
 # Inspect a video file directly
 sio show video.mp4                     # Video properties and metadata
+sio show recording.seq                 # Norpix .seq file info
 
 # Convert between formats
 sio convert labels.slp -o labels.nwb
@@ -151,6 +153,7 @@ sio reencode video.mp4 -o output.mp4 --quality high        # Higher quality
 sio reencode video.mp4 -o output.mp4 --keyframe-interval 0.5  # Max reliability
 sio reencode highspeed.mp4 -o preview.mp4 --fps 30 --quality low  # Downsample
 sio reencode video.mp4 -o output.mp4 --dry-run             # Show ffmpeg command
+sio reencode recording.seq -o recording.mp4                # Convert Norpix .seq to MP4
 sio reencode project.slp -o project.reencoded.slp          # Batch reencode all videos in SLP
 
 # Transform video and adjust landmark coordinates
@@ -446,6 +449,12 @@ sio convert labels.slp -o annotations.json --to coco
 
 # Convert COCO to SLEAP
 sio convert annotations.json -o labels.slp --from coco
+
+# Convert TrackMate spot data to SLEAP (auto-detected from headers)
+sio convert spots.csv -o labels.slp
+
+# Explicit TrackMate import (skips content sniffing)
+sio convert spots.csv -o labels.slp --from trackmate
 ```
 
 ### Options
@@ -460,24 +469,29 @@ sio convert annotations.json -o labels.slp --from coco
 | `--csv-format` | CSV output format: `sleap`, `dlc`, `points`, `instances`, `frames` |
 | `--scorer` | Scorer name for DLC CSV output (default: `sleap-io`) |
 | `--save-metadata` | Save JSON metadata file for CSV round-trip support |
+| `--h5-dim-order` | HDF5 axis ordering: `matlab` or `standard` (analysis_h5 only) |
+| `--min-occupancy` | Filter tracks below this occupancy ratio (analysis_h5 only) |
 
 ### Supported Formats
 
-**Input formats:** `slp`, `nwb`, `coco`, `labelstudio`, `alphatracker`, `jabs`, `dlc`, `csv`, `ultralytics`, `leap`
+**Input formats:** `slp`, `nwb`, `coco`, `labelstudio`, `alphatracker`, `jabs`, `dlc`, `csv`, `trackmate`, `ultralytics`, `leap`
 
-**Output formats:** `slp`, `nwb`, `coco`, `labelstudio`, `jabs`, `ultralytics`, `csv`
+**Output formats:** `slp`, `nwb`, `coco`, `labelstudio`, `jabs`, `ultralytics`, `csv`, `analysis_h5`
 
 ### Format Detection
 
 The CLI automatically detects formats from file extensions:
 
-| Extension | Format |
-|-----------|--------|
-| `.slp` | SLEAP |
-| `.nwb` | NWB |
-| `.mat` | LEAP |
-| `.csv` | DeepLabCut |
-| Directory with `data.yaml` | Ultralytics |
+| Extension | Input Format | Output Format |
+|-----------|--------------|---------------|
+| `.slp` | SLEAP | SLEAP |
+| `.nwb` | NWB | NWB |
+| `.mat` | LEAP | - |
+| `.csv` | TrackMate or DeepLabCut (auto-detected from headers) | CSV |
+| `.h5` / `.hdf5` | (ambiguous) | Analysis HDF5 |
+| Directory with `data.yaml` | Ultralytics | Ultralytics |
+
+For `.csv` inputs, the CLI first sniffs the file header: TrackMate spots exports are detected via their `LABEL,ID,TRACK_ID,...` schema, otherwise DeepLabCut multi-index headers are matched, and everything else falls back to the generic `csv` reader. Pass `--from trackmate` or `--from dlc` to bypass sniffing.
 
 **Ambiguous extensions** (`.json`, `.h5`) require explicit `--from`:
 
@@ -536,7 +550,7 @@ yolo_dataset/
 
 ### Export to CSV
 
-Export pose data to CSV format for use with spreadsheet tools or custom analysis pipelines:
+Export pose data to CSV format for use with spreadsheet tools or custom analysis pipelines. See [CSV Format](formats/csv.md) for detailed column specifications.
 
 ```bash
 # Export to SLEAP Analysis CSV (default)
@@ -565,6 +579,198 @@ sio convert labels.slp -o output.csv --save-metadata
 - **`points`**: One row per point (most normalized)
 - **`instances`**: One row per instance with node coordinates as columns
 - **`frames`**: One row per frame with all instances multiplexed
+
+### Export to Analysis HDF5
+
+Export pose data to SLEAP Analysis HDF5 format for use with MATLAB or numerical analysis. See [Analysis HDF5 Format](formats/analysis_h5.md) for dataset layout and usage examples.
+
+```bash
+# Export to Analysis HDF5 (MATLAB-compatible ordering)
+sio convert labels.slp -o analysis.h5
+
+# Export with Python-native axis ordering
+sio convert labels.slp -o analysis.h5 --h5-dim-order standard
+
+# Filter tracks by occupancy
+sio convert labels.slp -o analysis.h5 --min-occupancy 0.5
+```
+
+#### HDF5 Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--h5-dim-order` | `matlab` | Axis ordering: `matlab` (SLEAP-compatible) or `standard` |
+| `--min-occupancy` | `0.0` | Filter tracks below this occupancy ratio (0-1) |
+
+---
+
+## `sio export`
+
+Export pose data to analysis-ready formats ([CSV](formats/csv.md), [Analysis HDF5](formats/analysis_h5.md)) with full control over frame padding, video selection, and output structure.
+
+```bash
+sio export <input> -o <output> [options]
+sio export -i <input> -o <output> [options]
+```
+
+!!! tip "Export vs Convert"
+    Use `sio export` when you need analysis-ready outputs with control over frame padding and structure. Use `sio convert` when transforming between label file formats (SLP, NWB, COCO, etc.).
+
+### Basic Usage
+
+```bash
+# Export to CSV (includes all frames, pads missing with NaN)
+sio export predictions.slp -o analysis.csv
+
+# Export to Analysis HDF5
+sio export predictions.slp -o analysis.h5
+
+# Export only frames with instances (sparse, no padding)
+sio export predictions.slp -o sparse.csv --no-empty-frames
+
+# Export specific frame range
+sio export predictions.slp -o clip.csv --start 100 --end 500
+```
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-i, --input` | (required) | Input labels file (can also pass as positional argument) |
+| `-o, --output` | (required) | Output file path (.csv or .h5) |
+| `--format` | (inferred) | Output format: `csv` or `h5`. Inferred from extension if not specified |
+
+#### CSV Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--csv-format` | `frames` | CSV layout: `sleap`, `dlc`, `points`, `instances`, `frames` |
+| `--scorer` | `sleap-io` | Scorer name for DLC format |
+| `--save-metadata/--no-metadata` | off | Save JSON metadata alongside CSV |
+| `--video-id` | `path` | How to identify videos: `path`, `index`, `name` |
+| `--chunk-size` | (none) | Write CSV in chunks of N rows for memory-efficient export |
+
+#### HDF5 Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--h5-dim-order` | `matlab` | Axis ordering: `matlab` (SLEAP-compatible) or `standard` (frame-first) |
+| `--min-occupancy` | `0.0` | Filter tracks below this occupancy ratio (0-1) |
+| `--h5-metadata/--no-h5-metadata` | on | Save extended metadata for round-trip support |
+
+#### Frame Selection
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--empty-frames/--no-empty-frames` | on | Include frames with no instances (padded with NaN) |
+| `--start` | (none) | Start frame index (inclusive) |
+| `--end` | (none) | End frame index (exclusive) |
+| `--include-scores/--no-scores` | on | Include confidence scores in output |
+
+#### Video Selection
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-v, --video` | (none) | Video to export: index (0, 1, ...) or `all` for batch export |
+
+### Multi-Video Files
+
+For labels with multiple videos, you must specify which video to export:
+
+```bash
+# Export specific video by index
+sio export multi.slp -o video0.csv -v 0
+sio export multi.slp -o video1.csv -v 1
+
+# Export all videos to separate files
+sio export multi.slp -o analysis.csv -v all
+# Creates: analysis.video0.csv, analysis.video1.csv, ...
+```
+
+Without `-v`, exporting a multi-video file will show an error with instructions.
+
+### CSV Formats
+
+The `--csv-format` option controls the structure of CSV output:
+
+| Format | Description | Rows |
+|--------|-------------|------|
+| `frames` | One row per frame, all instances as columns | Frame-centric |
+| `instances` | One row per instance | Instance-centric |
+| `points` | One row per point | Most normalized |
+| `sleap` | SLEAP Analysis CSV format | Instance-centric |
+| `dlc` | DeepLabCut format (multi-header) | Frame-centric |
+
+```bash
+# Frame-centric (default) - good for time series analysis
+sio export labels.slp -o frames.csv --csv-format frames
+
+# Point-centric - good for database imports
+sio export labels.slp -o points.csv --csv-format points
+
+# DeepLabCut compatible
+sio export labels.slp -o dlc.csv --csv-format dlc --scorer MyModel
+```
+
+### HDF5 Axis Ordering
+
+The `--h5-dim-order` option controls the array axis ordering:
+
+| Preset | tracks shape | Description |
+|--------|--------------|-------------|
+| `matlab` | `(tracks, 2, nodes, frames)` | SLEAP-compatible, optimized for MATLAB |
+| `standard` | `(frames, tracks, nodes, 2)` | Python-native, intuitive indexing |
+
+```bash
+# MATLAB-compatible (default, matches SLEAP's export)
+sio export predictions.slp -o analysis.h5
+
+# Python-native ordering
+sio export predictions.slp -o analysis.h5 --h5-dim-order standard
+```
+
+### Memory-Efficient Export for Large Datasets
+
+For labels with millions of frames, use `--chunk-size` to write CSV incrementally without loading the entire DataFrame into memory:
+
+```bash
+# Write in chunks of 10,000 rows
+sio export large_predictions.slp -o analysis.csv --chunk-size 10000
+
+# Combine with other options
+sio export large_predictions.slp -o sparse.csv \
+    --csv-format points \
+    --no-empty-frames \
+    --chunk-size 50000
+```
+
+!!! note "Chunked Writing Limitations"
+    - **CSV only**: HDF5 export currently requires full materialization in memory
+    - **Not supported for DLC format**: DLC format's multi-row header structure is not compatible with chunked writing
+
+### Examples
+
+```bash
+# Full export with all options
+sio export predictions.slp -o analysis.csv \
+    --csv-format frames \
+    --empty-frames \
+    --start 0 --end 1000 \
+    --include-scores \
+    --video-id path
+
+# Sparse export (only labeled frames)
+sio export predictions.slp -o sparse.csv --no-empty-frames
+
+# HDF5 with track filtering
+sio export predictions.slp -o filtered.h5 --min-occupancy 0.5
+
+# Batch export all videos
+sio export multi_video.slp -o export.csv -v all
+
+# Memory-efficient export for large files
+sio export large.slp -o analysis.csv --chunk-size 10000
+```
 
 ---
 
@@ -1541,6 +1747,8 @@ sio render <input> --lf <index> [-o <output>] [options]
 
 **Image mode**: Renders a single frame to a PNG image. Use `--lf` or `--frame`.
 
+**Overlay-only mode**: Render segmentation overlays on external images without a labels file. Pass `--images` with a TIFF stack or directory of TIFFs plus `--overlay` to drop straight into rendering, bypassing the labels requirement. See [Segmentation Overlays](#segmentation-overlays) below.
+
 ### Basic Usage
 
 ```bash
@@ -1562,6 +1770,12 @@ sio render predictions.slp --lf 0               # -> predictions.lf=0.png
 # Render without source video (solid background)
 sio render predictions.slp --background black
 sio render predictions.slp --background "#333"
+
+# Overlay a segmentation mask on rendered poses
+sio render predictions.slp --overlay masks.tif --overlay-alpha 0.4
+
+# Overlay-only mode: render masks on images without a labels file
+sio render --images frames/ --overlay masks.tif -o output.mp4
 ```
 
 ### Options Reference
@@ -1570,9 +1784,11 @@ sio render predictions.slp --background "#333"
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-i, --input` | (required) | Input labels file (can also pass as positional argument) |
+| `-i, --input` | (required in video/image mode) | Input labels file (can also pass as positional argument). Not required when `--images` + `--overlay` are used (overlay-only mode). |
 | `-o, --output` | auto | Output path. Default: `{input}.viz.mp4` for video, `{input}.lf={N}.png` for image |
 | `--background` | video | Background mode: `video` (load frames) or a color (e.g., `black`, `#333`) |
+| `--images` | none | Image source for overlay-only mode (no labels file needed): TIFF stack or directory of TIFFs |
+| `--images-stack` / `--no-images-stack` | auto | Force 3-D TIFF interpretation: `--images-stack` treats the file as a frame stack, `--no-images-stack` as a single image. Default auto-detects based on last dim (3 or 4 → single image, otherwise → stack). |
 
 #### Frame Selection Options
 
@@ -1607,6 +1823,26 @@ sio render predictions.slp --background "#333"
 | `--alpha` | 1.0 | Pose overlay transparency (0.0-1.0) |
 | `--no-nodes` | false | Hide node markers |
 | `--no-edges` | false | Hide skeleton edges |
+
+#### Overlay Options
+
+See [Segmentation Overlays](#segmentation-overlays) for end-to-end examples.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--overlay` | none | Segmentation overlay: TIFF file (2-D label image or 3-D stack) or directory of TIFF label images |
+| `--overlay-alpha` | 0.3 | Overlay opacity (0.0–1.0) |
+| `--overlay-palette` | distinct | Color palette for overlay labels |
+| `--overlay-outline` / `--no-overlay-outline` | off | Draw outlines around segmented regions |
+| `--overlay-outline-width` | 1 | Outline width in pixels |
+| `--overlay-outline-color` | (darkened fill) | Outline color (e.g., `white`, `#ff0000`, `255,0,0`) |
+
+#### Discovery Options
+
+| Option | Description |
+|--------|-------------|
+| `--list-colors` | Print available named colors and exit |
+| `--list-palettes` | Print available color palettes and exit |
 
 #### Crop Options (Single Image Only)
 
@@ -1783,6 +2019,38 @@ sio render predictions.slp --no-nodes
 # Show only nodes (no skeleton edges)
 sio render predictions.slp --no-edges
 ```
+
+### Segmentation Overlays
+
+`sio render` can composite segmentation masks over poses or over bare images. Overlays accept a TIFF stack (one frame per plane) or a directory of per-frame TIFF label images, and each integer label is colored via `--overlay-palette`.
+
+```bash
+# Segmentation overlay from a TIFF stack on top of pose predictions
+sio render predictions.slp --overlay masks.tif --overlay-alpha 0.4
+
+# Overlay from a directory of per-frame TIFFs
+sio render predictions.slp --overlay masks/
+
+# Single-frame PNG with overlay and outlines
+sio render predictions.slp --lf 0 --overlay masks.tif \
+    --overlay-outline --overlay-outline-color white
+
+# Overlay-only mode: no labels file, just images + masks
+sio render --images frames/ --overlay masks.tif -o output.mp4
+
+# Overlay-only with a TIFF stack of images
+sio render --images frames.tif --overlay masks/ --overlay-outline -o output.mp4
+
+# Tweak outline thickness and palette
+sio render predictions.slp --overlay masks.tif \
+    --overlay-palette tableau10 \
+    --overlay-outline --overlay-outline-width 2
+```
+
+!!! tip "Discovering palettes"
+    Use `sio render --list-palettes` to print all supported palette names (for both pose and overlay coloring) or `sio render --list-colors` for the named-color table used by `--background`, `--overlay-outline-color`, and similar options.
+
+See [Rendering → Segmentation Overlays](rendering.md#segmentation-overlays) for Python API equivalents.
 
 ### Multi-Video Labels
 
@@ -1970,6 +2238,7 @@ This creates:
 - **HDF5Video** (embedded videos in `.slp` files): Reencoded using Python path
 - **ImageVideo** (image sequences): Skipped (cannot be reencoded to video)
 - **TiffVideo** (TIFF stacks): Skipped (cannot be reencoded to video)
+- **SeqVideo** (Norpix `.seq` files): Reencoded using the Python path (falls back when ffmpeg cannot open the source)
 
 This is particularly useful for:
 
@@ -2463,4 +2732,4 @@ Optional:
 
 - [Formats](formats/): Detailed format specifications and Python API
 - [Examples](examples.md): Python code examples for common tasks
-- [Model](model.md): Data model documentation
+- [Model](model/index.md): Data model documentation
